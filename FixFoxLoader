@@ -1,0 +1,16 @@
+local SpecialScripts = {
+	[18687417158]      = "https://raw.githubusercontent.com/FixFox550/FixFox/refs/heads/main/Fixsaken",
+	[83645629621104]   = "https://raw.githubusercontent.com/FixFox550/FixFox/refs/heads/main/Fixsaken",
+	[86454545238517]   = "https://raw.githubusercontent.com/FixFox550/FixFox/refs/heads/main/Fixsaken",
+	[71895508397153]   = "https://raw.githubusercontent.com/FixFox550/FixFox/refs/heads/main/FixOfFox",
+}
+
+local function handlePlaceId()
+	local PlaceId = game.PlaceId
+	local scriptUrl = SpecialScripts[PlaceId]
+	if scriptUrl then
+		loadstring(game:HttpGet(scriptUrl))()
+	end
+end
+
+handlePlaceId()
