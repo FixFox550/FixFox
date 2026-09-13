@@ -113,10 +113,14 @@ local KILLER_ALIASES = {
 
 local PRIMARY_ATTACK_ANIM = {
     Slash = true, SlashAir = true, EnragedSlash = true, Stab = true, Attack = true,
+    Perforation = true, Perforating = true, Perforate = true,
+    Pummeling = true, Pummel = true,
 }
 
 local PRIMARY_ATTACK_SOUND = {
     Swing = true, Slash = true, SlashWindup = true, SlashGround = true, Chomp = true,
+    Perforation = true, PerforationWindup = true, Perforating = true, Perforate = true,
+    Pummeling = true, PummelingWindup = true, Pummel = true,
 }
 
 local hookedKillers   = setmetatable({}, {__mode = "k"})
