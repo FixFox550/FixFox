@@ -1,0 +1,572 @@
+local Players  = game:GetService("Players")
+local LP       = Players.LocalPlayer
+local PlayerGui = LP:WaitForChild("PlayerGui", 10)
+
+pcall(function()
+    if PlayerGui then
+        for _, g in ipairs(PlayerGui:GetChildren()) do
+            if g:IsA("ScreenGui") and (g.Name == "Obsidian" or g.Name:find("Obsidian")) then
+                g:Destroy()
+            end
+        end
+    end
+end)
+
+local ReplicatedStorage  = game:GetService("ReplicatedStorage")
+local Workspace          = game:GetService("Workspace")
+local Debris             = game:GetService("Debris")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+local gameName = game.Name
+pcall(function()
+    local info = MarketplaceService:GetProductInfo(game.PlaceId)
+    if info and info.Name then gameName = info.Name end
+end)
+
+local function getVersionText()
+    local ok, result = pcall(function()
+        local pg = LP:FindFirstChildOfClass("PlayerGui")
+        if not pg then return nil end
+        for _, obj in ipairs(pg:GetDescendants()) do
+            if (obj:IsA("TextLabel") or obj:IsA("TextButton"))
+                and (obj.Name == "Version" or obj.Name:lower():find("version")) then
+                return obj.Text
+            end
+        end
+        return nil
+    end)
+    if ok then return result end
+    return nil
+end
+
+local versionText = nil
+for _ = 1, 50 do
+    versionText = getVersionText()
+    if versionText then break end
+    task.wait(0.2)
+end
+if not versionText then versionText = "Unknown" end
+
+local repo    = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
+
+local ThemeManager = nil
+pcall(function()
+    ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+end)
+
+pcall(function()
+    Library:SetNotifySound("rbxassetid://4590657391", 3)
+end)
+
+local Window = Library:CreateWindow({
+    Title            = "MoonBlock",
+    Footer           = tostring(gameName) .. " | " .. tostring(versionText),
+    NotifySide       = "Right",
+    ShowCustomCursor = true,
+    Icon             = "rbxassetid://9343303339",
+})
+
+local Tabs = {
+    ["Main"]        = Window:AddTab("MoonBlock", "shield"),
+    ["UI Settings"] = Window:AddTab("UI Settings", "settings"),
+}
+
+pcall(function()
+    if ThemeManager then
+        ThemeManager:SetLibrary(Library)
+        ThemeManager:SetDefaultTheme({
+            BackgroundColor = Color3.fromRGB(0, 0, 0),
+            MainColor       = Color3.fromRGB(25, 25, 25),
+            AccentColor     = Color3.fromRGB(162, 162, 162),
+            OutlineColor    = Color3.fromRGB(40, 40, 40),
+            FontColor       = Color3.fromRGB(255, 255, 255),
+            FontFace        = Enum.Font.Gotham,
+        })
+        ThemeManager:ApplyToTab(Tabs["UI Settings"])
+    end
+end)
+
+local SPAWN_INTERVAL   = 0.05
+local DEBOUNCE         = 0.15
+local NORMAL_LIFETIME  = 0.3
+local HIT_LIFETIME     = 0.5
+local REFRESH_INTERVAL = 0.5
+local AUTO_PUNCH_DELAY = 0.15
+
+local Settings = {
+    AutoBlockEnabled   = false,
+    AutoPunch          = false,
+    BlockDelay         = 0,
+    BaseHitboxSize     = Vector3.new(4.5, 6, 7.5),
+    HitboxScale        = 1.0,
+    HitboxOffset       = -1.4,
+    HitboxColor        = Color3.fromRGB(255, 255, 255),
+    HitboxTransparency = 0.6,
+    SpawnDuration      = 0.6,
+}
+
+local KILLER_ALIASES = {
+    ["Guest 666"] = "Sixer",
+    ["Guest666"]  = "Sixer",
+}
+
+local PRIMARY_ATTACK_ANIM = {
+    Slash = true, SlashAir = true, EnragedSlash = true, Stab = true, Attack = true,
+}
+
+local PRIMARY_ATTACK_SOUND = {
+    Swing = true, Slash = true, SlashWindup = true, SlashGround = true, Chomp = true,
+}
+
+local hookedKillers   = setmetatable({}, {__mode = "k"})
+local hookedAnimators = setmetatable({}, {__mode = "k"})
+local hookedSounds    = setmetatable({}, {__mode = "k"})
+local watchedFolders  = setmetatable({}, {__mode = "k"})
+
+local function notify(title, desc)
+    pcall(function()
+        Library:Notify({ Title = title, Description = desc, Time = 2 })
+    end)
+end
+
+local BlockRemote = nil
+local function getBlockRemote()
+    if BlockRemote then return BlockRemote end
+    local ok, remote = pcall(function()
+        return ReplicatedStorage:WaitForChild("Modules", 10)
+            :WaitForChild("Network", 5)
+            :WaitForChild("Network", 5)
+            :WaitForChild("RemoteEvent", 5)
+    end)
+    if ok and remote then BlockRemote = remote; return remote end
+end
+
+local function fireBlockRemote()
+    local remote = getBlockRemote()
+    if not remote then return end
+    pcall(function()
+        remote:FireServer("UseActorAbility", { buffer.fromstring("\003\005\000\000\000Block") })
+    end)
+end
+
+local function firePunchRemote()
+    local remote = getBlockRemote()
+    if not remote then return end
+    pcall(function()
+        remote:FireServer("UseActorAbility", { buffer.fromstring("\003\005\000\000\000Punch") })
+    end)
+end
+
+local killerAnimIds  = {}
+local killerSoundIds = {}
+
+local function collectAttackAnimations(animTable, output, depth)
+    depth = depth or 0
+    if depth > 3 or type(animTable) ~= "table" then return end
+    for k, v in pairs(animTable) do
+        if PRIMARY_ATTACK_ANIM[k] then
+            if type(v) == "string" then
+                local id = v:match("%d+"); if id then output[id] = true end
+            elseif type(v) == "table" then
+                for _, sub in pairs(v) do
+                    if type(sub) == "string" then
+                        local id = sub:match("%d+"); if id then output[id] = true end
+                    end
+                end
+            end
+        end
+        if type(v) == "table" then collectAttackAnimations(v, output, depth + 1) end
+    end
+end
+
+local function collectAttackSounds(soundTable, output, depth)
+    depth = depth or 0
+    if depth > 3 or type(soundTable) ~= "table" then return end
+    for k, v in pairs(soundTable) do
+        if PRIMARY_ATTACK_SOUND[k] then
+            if type(v) == "string" then
+                local id = v:match("%d+"); if id then output[id] = true end
+            elseif type(v) == "table" and not v.SoundId and not v.ID then
+                for _, sub in pairs(v) do
+                    if type(sub) == "string" then
+                        local id = sub:match("%d+"); if id then output[id] = true end
+                    end
+                end
+            end
+        end
+        if type(v) == "table" then collectAttackSounds(v, output, depth + 1) end
+    end
+end
+
+local function findKillerConfig(killer)
+    local assets = ReplicatedStorage:FindFirstChild("Assets")
+    if not assets then return nil end
+    local killersFolder = assets:FindFirstChild("Killers")
+    if not killersFolder then return nil end
+
+    local name  = killer.Name
+    local alias = KILLER_ALIASES[name]
+    local baseFolder = killersFolder:FindFirstChild(name)
+        or (alias and killersFolder:FindFirstChild(alias))
+
+    if not baseFolder then
+        for _, f in ipairs(killersFolder:GetChildren()) do
+            local c = f:FindFirstChild("Config")
+            if c and c:IsA("ModuleScript") then
+                local ok, data = pcall(require, c)
+                if ok and type(data) == "table"
+                    and (data.DisplayName == name or (alias and data.DisplayName == alias)) then
+                    baseFolder = f; break
+                end
+            end
+        end
+    end
+    if not baseFolder then return nil end
+
+    local skinName = killer:GetAttribute("SkinName") or killer:GetAttribute("Skin")
+    if type(skinName) == "string" and skinName ~= "" then
+        local skinsFolder = assets:FindFirstChild("Skins")
+        local skinKillers = skinsFolder and skinsFolder:FindFirstChild("Killers")
+        local killerSkins = skinKillers and skinKillers:FindFirstChild(baseFolder.Name)
+        if killerSkins then
+            local skinFolder = killerSkins:FindFirstChild(skinName)
+            if skinFolder then
+                local c = skinFolder:FindFirstChild("Config")
+                if c and c:IsA("ModuleScript") then return c end
+            end
+        end
+    end
+
+    local baseConfig = baseFolder:FindFirstChild("Config")
+    if baseConfig and baseConfig:IsA("ModuleScript") then return baseConfig end
+    return nil
+end
+
+local function buildKillerIds(killer)
+    local animIds, soundIds = {}, {}
+    local config = findKillerConfig(killer)
+    if config then
+        local ok, data = pcall(require, config)
+        if ok and type(data) == "table" then
+            if data.Animations then collectAttackAnimations(data.Animations, animIds) end
+            if data.Sounds     then collectAttackSounds(data.Sounds, soundIds) end
+        end
+    end
+    killerAnimIds[killer]  = animIds
+    killerSoundIds[killer] = soundIds
+end
+
+task.spawn(function()
+    while true do
+        local pf = Workspace:FindFirstChild("Players")
+        local kf = (pf and pf:FindFirstChild("Killers")) or Workspace:FindFirstChild("Killers")
+        if kf then
+            for _, killer in ipairs(kf:GetChildren()) do
+                if killer:IsA("Model") then
+                    pcall(buildKillerIds, killer)
+                end
+            end
+        end
+        task.wait(REFRESH_INTERVAL)
+    end
+end)
+
+local cachedPlayerQuery = nil
+local function getPlayerQuery()
+    if not cachedPlayerQuery or not cachedPlayerQuery.Parent then
+        local myChar = LP.Character
+        cachedPlayerQuery = myChar and (
+            myChar:FindFirstChild("QueryHitbox") or myChar:FindFirstChild("HumanoidRootPart")
+        ) or nil
+    end
+    return cachedPlayerQuery
+end
+
+LP.CharacterAdded:Connect(function() cachedPlayerQuery = nil end)
+
+local function createHitboxPart(cf, withOutline, lifetime)
+    local part = Instance.new("Part")
+    part.Name         = withOutline and "AutoBlockHitbox_Hit" or "AutoBlockHitbox"
+    part.Size         = Settings.BaseHitboxSize * Settings.HitboxScale
+    part.CFrame       = cf
+    part.Anchored     = true
+    part.CanCollide   = false
+    part.CanTouch     = false
+    part.CanQuery     = false
+    part.CastShadow   = false
+    part.Color        = Settings.HitboxColor
+    part.Material     = Enum.Material.ForceField
+    part.Transparency = Settings.HitboxTransparency
+    part.Parent       = Workspace
+
+    if withOutline then
+        local outline = Instance.new("SelectionBox")
+        outline.Adornee       = part
+        outline.Color3        = Settings.HitboxColor
+        outline.LineThickness = 0.02
+        outline.Transparency  = Settings.HitboxTransparency
+        outline.Visible       = true
+        outline.Parent        = part
+    end
+
+    Debris:AddItem(part, lifetime)
+    return part
+end
+
+local function hitboxTouchesPlayer(hb)
+    local pq = getPlayerQuery()
+    if not pq then return false end
+    local params = OverlapParams.new()
+    params.FilterType = Enum.RaycastFilterType.Include
+    params.FilterDescendantsInstances = { pq }
+    local hits = Workspace:GetPartBoundsInBox(hb.CFrame, hb.Size, params)
+    return #hits > 0
+end
+
+local activeLoops = {}
+
+local function fireBlockAndPunch()
+    fireBlockRemote()
+    if Settings.AutoPunch then
+        task.delay(AUTO_PUNCH_DELAY, firePunchRemote)
+    end
+end
+
+local function startSnapshotLoop(slasher)
+    if activeLoops[slasher] then
+        activeLoops[slasher].cancelled = true
+    end
+    local token = { cancelled = false }
+    activeLoops[slasher] = token
+
+    task.spawn(function()
+        local startTime = tick()
+        while true do
+            if token.cancelled then break end
+            if not Settings.AutoBlockEnabled then break end
+            if not slasher or not slasher.Parent then break end
+            if tick() - startTime >= Settings.SpawnDuration then break end
+
+            local root = slasher:FindFirstChild("HumanoidRootPart")
+                or slasher:FindFirstChild("QueryHitbox")
+                or slasher:FindFirstChild("RootPart")
+            if root then
+                local cf = root.CFrame * CFrame.new(0, 0, Settings.HitboxOffset)
+                local hb = createHitboxPart(cf, false, NORMAL_LIFETIME)
+
+                if hitboxTouchesPlayer(hb) then
+                    createHitboxPart(cf, true, HIT_LIFETIME)
+                    if Settings.BlockDelay > 0 then
+                        task.delay(Settings.BlockDelay, fireBlockAndPunch)
+                    else
+                        fireBlockAndPunch()
+                    end
+                    token.cancelled = true
+                    break
+                end
+            end
+
+            task.wait(SPAWN_INTERVAL)
+        end
+        if activeLoops[slasher] == token then
+            activeLoops[slasher] = nil
+        end
+    end)
+end
+
+local lastTriggerTime = {}
+local function tryTrigger(slasher)
+    if not Settings.AutoBlockEnabled then return end
+    if not slasher or not slasher.Parent then return end
+    local now = tick()
+    if now - (lastTriggerTime[slasher] or 0) < DEBOUNCE then return end
+    lastTriggerTime[slasher] = now
+    startSnapshotLoop(slasher)
+end
+
+local function setupKiller(killer)
+    if not killer or not killer.Parent then return end
+    if hookedKillers[killer] then return end
+    hookedKillers[killer] = true
+
+    local function hookAnimator()
+        local hum = killer:FindFirstChildOfClass("Humanoid")
+        if not hum then
+            killer.ChildAdded:Connect(function()
+                task.wait(0.2)
+                hookAnimator()
+            end)
+            return
+        end
+        local animator = hum:FindFirstChildOfClass("Animator")
+        if not animator then
+            hum.ChildAdded:Connect(function(c)
+                if c:IsA("Animator") then
+                    task.wait(0.2)
+                    hookAnimator()
+                end
+            end)
+            return
+        end
+        if hookedAnimators[animator] then return end
+        hookedAnimators[animator] = true
+
+        animator.AnimationPlayed:Connect(function(track)
+            if not track or not track.Animation then return end
+            local aid = track.Animation.AnimationId
+            if type(aid) ~= "string" then return end
+            local id = aid:match("%d+")
+            if not id then return end
+            local current = killerAnimIds[killer]
+            if current and current[id] then tryTrigger(killer) end
+        end)
+    end
+    hookAnimator()
+
+    local function hookKillerSound(d)
+        if not d:IsA("Sound") then return end
+        if hookedSounds[d] then return end
+        hookedSounds[d] = true
+
+        local function onPlay()
+            if not Settings.AutoBlockEnabled then return end
+            local id = tostring(d.SoundId):match("%d+")
+            if not id then return end
+            local current = killerSoundIds[killer]
+            if current and current[id] then tryTrigger(killer) end
+        end
+
+        d.Played:Connect(onPlay)
+        d:GetPropertyChangedSignal("IsPlaying"):Connect(function()
+            if d.IsPlaying then onPlay() end
+        end)
+        if d.IsPlaying then task.spawn(onPlay) end
+    end
+
+    for _, d in ipairs(killer:GetDescendants()) do hookKillerSound(d) end
+    killer.DescendantAdded:Connect(hookKillerSound)
+end
+
+local function watchKillersFolder(kf)
+    for _, k in ipairs(kf:GetChildren()) do
+        if k:IsA("Model") then
+            task.spawn(function() task.wait(0.3); setupKiller(k) end)
+        end
+    end
+    kf.ChildAdded:Connect(function(c)
+        if c:IsA("Model") then task.wait(0.3); setupKiller(c) end
+    end)
+end
+
+task.spawn(function()
+    while true do
+        local pf = Workspace:FindFirstChild("Players")
+        local kf = (pf and pf:FindFirstChild("Killers")) or Workspace:FindFirstChild("Killers")
+        if kf and not watchedFolders[kf] then
+            watchedFolders[kf] = true
+            watchKillersFolder(kf)
+        end
+        task.wait(1)
+    end
+end)
+
+local LeftTabbox = Tabs["Main"]:AddLeftTabbox()
+local MainSub    = LeftTabbox:AddTab("MoonBlock")
+local ConfigSub  = LeftTabbox:AddTab("Config")
+
+MainSub:AddToggle("SurvivorBlockToggle", {
+    Text = "MoonBlock",
+    Default = false,
+    Callback = function(v)
+        Settings.AutoBlockEnabled = v
+        if v then
+            getBlockRemote()
+            notify("MoonBlock", "Enabled")
+        else
+            notify("MoonBlock", "Disabled")
+        end
+    end,
+})
+
+MainSub:AddToggle("AutoPunchToggle", {
+    Text = "Auto Punch",
+    Default = false,
+    Callback = function(v)
+        Settings.AutoPunch = v
+        notify("Auto Punch", v and "Enabled" or "Disabled")
+    end,
+})
+
+ConfigSub:AddSlider("BlockDelay", {
+    Text = "Block Delay",
+    Default = 0,
+    Min = 0,
+    Max = 1,
+    Rounding = 2,
+    Callback = function(v) Settings.BlockDelay = v end,
+})
+
+local HitboxRight = Tabs["Main"]:AddRightGroupbox("Hitbox", "sliders")
+
+HitboxRight:AddSlider("HitboxOffset", {
+    Text = "Offset (Z)",
+    Default = -1.4,
+    Min = -10,
+    Max = 0,
+    Rounding = 1,
+    Callback = function(v) Settings.HitboxOffset = v end,
+})
+
+HitboxRight:AddSlider("HitboxSize", {
+    Text = "Size",
+    Default = 1.0,
+    Min = 0.2,
+    Max = 3.0,
+    Rounding = 2,
+    Callback = function(v) Settings.HitboxScale = v end,
+})
+
+HitboxRight:AddSlider("SpawnDuration", {
+    Text = "Spawn Duration",
+    Default = 0.6,
+    Min = 0.1,
+    Max = 3.0,
+    Rounding = 2,
+    Callback = function(v) Settings.SpawnDuration = v end,
+})
+
+HitboxRight:AddSlider("HitboxTransparency", {
+    Text = "Transparency",
+    Default = 0.6,
+    Min = 0,
+    Max = 1,
+    Rounding = 2,
+    Callback = function(v)
+        Settings.HitboxTransparency = v
+        for _, obj in ipairs(Workspace:GetChildren()) do
+            if obj.Name == "AutoBlockHitbox" or obj.Name == "AutoBlockHitbox_Hit" then
+                obj.Transparency = v
+                local o = obj:FindFirstChildOfClass("SelectionBox")
+                if o then o.Transparency = v end
+            end
+        end
+    end,
+})
+
+HitboxRight:AddLabel("Hitbox Color"):AddColorPicker("HitboxColor", {
+    Default = Settings.HitboxColor,
+    Title   = "Hitbox Color",
+    Callback = function(c) Settings.HitboxColor = c end,
+})
+
+local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu", "wrench")
+MenuGroup:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", {
+    Default = "RightShift",
+    NoUI    = true,
+    Text    = "Menu keybind",
+})
+MenuGroup:AddButton("Unload", function() Library:Unload() end)
+Library.ToggleKeybind = Library.Options.MenuKeybind
+
+notify("MoonBlock", "Loaded")
