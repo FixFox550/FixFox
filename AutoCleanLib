@@ -1,0 +1,66 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local AutoGraffitiClean = {}
+AutoGraffitiClean.MIN_INTERVAL = 0.12
+AutoGraffitiClean.__lastSpray = 0
+AutoGraffitiClean.__connection = nil
+
+local function getActiveGraffiti()
+	for _, v in getgc(true) do
+		if typeof(v) == "table" and rawget(v, "__view") and rawget(v, "__splash") and rawget(v, "Network") then
+			local view = rawget(v, "__view")
+			local splash = rawget(v, "__splash")
+			if view and not view.Ending and splash and splash.Dot then
+				return v, splash
+			end
+		end
+	end
+	return nil
+end
+
+function AutoGraffitiClean.start()
+	if AutoGraffitiClean.__connection then
+		return AutoGraffitiClean
+	end
+
+	AutoGraffitiClean.__lastSpray = 0
+	AutoGraffitiClean.__connection = RunService.Heartbeat:Connect(function()
+		local now = tick()
+		if now - AutoGraffitiClean.__lastSpray < AutoGraffitiClean.MIN_INTERVAL then
+			return
+		end
+
+		local graffiti, splash = getActiveGraffiti()
+		if not graffiti or not splash then
+			return
+		end
+
+		local sprayFunc = rawget(getmetatable(graffiti) or graffiti, "__spray") or graffiti.__spray
+		if typeof(sprayFunc) == "function" then
+			pcall(sprayFunc, graffiti, splash.Dot)
+			AutoGraffitiClean.__lastSpray = now
+		end
+	end)
+
+	return AutoGraffitiClean
+end
+
+function AutoGraffitiClean.stop()
+	if AutoGraffitiClean.__connection then
+		AutoGraffitiClean.__connection:Disconnect()
+		AutoGraffitiClean.__connection = nil
+	end
+	return AutoGraffitiClean
+end
+
+function AutoGraffitiClean.isRunning()
+	return AutoGraffitiClean.__connection ~= nil
+end
+
+function AutoGraffitiClean.setInterval(interval)
+	AutoGraffitiClean.MIN_INTERVAL = interval
+	return AutoGraffitiClean
+end
+
+return AutoGraffitiClean
